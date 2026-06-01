@@ -1,47 +1,64 @@
 # expense-report-agent
 
-월별 법인카드 영수증을 지출결의서 엑셀에 자동 작성하는 Claude Code 서브에이전트 + 진행 메모를 PC 간 동기화하기 위한 저장소.
+월별 법인카드 영수증을 `법인카드 등 정산서` 엑셀에 자동 작성하는 Claude Code 에이전트·스킬 모음 + 진행 메모 동기화 저장소.
 
 ## 파일 구조
 
 ```
 agents/
-  expense-report.md                       # 서브에이전트 정의
+  expense-report.md                       # 지출결의서 작성 서브에이전트
+  receipt-rename.md                        # 영수증 파일명 정리 서브에이전트
+.claude/skills/
+  corpcard-expense/
+    SKILL.md                              # 통합 워크플로 스킬 (/corpcard-expense)
+    scripts/                              # 매월 폴더 자동생성 스크립트 동봉
+automation/
+  monthly_folder.ps1                       # 매월 1일 정산 폴더 생성(멱등)
+  install_task.ps1                         # 작업 스케줄러 등록
+  README.md
 memory/
-  project_expense_report_agent.md         # 진행 상황 / 블로커 메모
+  project_expense_report_agent.md          # 진행 상황 메모
 ```
 
-## 다른 PC에서 받아 적용하기
+## 스킬 사용법 (`/corpcard-expense`)
 
-홈 디렉터리 경로 차이에 주의. macOS 기준 `~/.claude/projects/` 아래 디렉터리 이름은 그 PC의 홈 경로를 슬래시 → 하이픈으로 바꾼 형태입니다 (예: `/Users/foo` → `-Users-foo`). Claude Code를 한 번이라도 실행했으면 해당 디렉터리가 자동 생성돼 있습니다.
+영수증 정리 → 지출결의서 작성 → (선택) 월폴더 자동화를 한 번에 처리하는 스킬.
 
 ```bash
 git clone https://github.com/nuna20230424-ship-it/kaondqa.git
 cd kaondqa
-
-# 1) 서브에이전트 설치
-mkdir -p ~/.claude/agents
-cp agents/expense-report.md ~/.claude/agents/
-
-# 2) 진행 메모 복원 (디렉터리명은 본인 PC 경로에 맞게)
-PROJ_DIR=$(ls -d ~/.claude/projects/-Users-* | head -1)
-mkdir -p "$PROJ_DIR/memory"
-cp memory/project_expense_report_agent.md "$PROJ_DIR/memory/"
-
-# 3) MEMORY.md 인덱스에 한 줄 추가 (없으면 새로 생성)
-echo '- [지출결의서 에이전트 진행 상황](project_expense_report_agent.md) — 양식 DRM 해제 후 재업로드 대기 중, 컬럼 매핑 분석 재개 필요' >> "$PROJ_DIR/memory/MEMORY.md"
+# 이 폴더에서 Claude Code를 실행하면 .claude/skills/ 의 스킬이 자동 인식됨
 ```
 
-## 현재 상태 (재개 시 첫 스텝)
+- 전역으로 쓰려면 스킬 폴더를 홈에 복사: `cp -r .claude/skills/corpcard-expense ~/.claude/skills/`
+- Claude Code에서 `/corpcard-expense` 호출 후, 묻는 대로 입력값을 제공한다.
+  1. 영수증 폴더 경로
+  2. 양식(`법인카드 등 정산서`) 파일 경로
+  3. 파일명 접두사 — 파트·명목에 맞게 (예: `개발QA파트_업무활동비_`)
+  4. 대상 월 / 출력 경로(선택)
+- 결과: 정리된 영수증 파일명 + 채워진 지출결의서(`*_작성본.xlsx`) + 계정과목별 요약 보고.
 
-- 양식 파일 `법인카드 등 정산서.xlsx`가 회사 DRM(SoftCamp SCDSA002)으로 암호화돼 openpyxl로 못 읽는 상태.
-- DRM 해제된 파일을 받으면:
-  1. 헤더 바이트가 `PK..`로 시작하는지 확인 (정상 xlsx인지)
-  2. openpyxl로 헤더 행 위치 / 컬럼명 / 데이터 시작 행 / 합계 행 분석
-  3. `agents/expense-report.md`의 컬럼 매핑 부분을 양식에 맞게 업데이트
-- 처리 작업: 계정과목 분류, 공급가액/부가세 분리, 건별 적요 생성, 월별 합계.
+자세한 컬럼 매핑·금액 판독·계정 분류 규칙은 `.claude/skills/corpcard-expense/SKILL.md` 참고.
+
+## 서브에이전트만 쓰기
+
+스킬 대신 개별 에이전트로도 쓸 수 있다.
+
+```bash
+mkdir -p ~/.claude/agents
+cp agents/expense-report.md agents/receipt-rename.md ~/.claude/agents/
+```
+
+## 매월 정산 폴더 자동생성 (선택)
+
+`automation/`(또는 스킬의 `scripts/`) 스크립트로 매월 1일 폴더를 자동 생성한다.
+
+1. `monthly_folder.ps1`·`install_task.ps1`의 `BaseDir`·`Master`·양식 접두사를 본인 환경에 맞게 수정
+2. 빈 양식을 `Master` 경로에 둔다
+3. `install_task.ps1` 실행 → 작업 스케줄러에 매월 1일 09:00 등록
+
+> PowerShell 5.1은 `.ps1`을 **UTF-8 BOM**으로 저장해야 한글이 깨지지 않는다(BOM 없으면 파싱 오류).
 
 ## 저장소에 없는 것
 
-- 양식 xlsx 자체 — 회사 DRM이 걸려 있어 다른 PC에서도 못 열기 때문에 제외. DRM 해제본은 각 PC에서 별도로 받아야 함.
-- 영수증 이미지/PDF — 개인 자료라 동기화 대상 아님.
+- 양식 xlsx·영수증 이미지/PDF — 회사 자료·개인정보라 동기화 대상 아님. 각 PC에서 별도로 둔다.
