@@ -26,18 +26,48 @@ tools: Read, Write, Edit, Bash, Glob, Grep
 - 양식 파일을 Read 도구로 먼저 열어 시트 구조/헤더 행/필수 컬럼 위치 파악
 
 ### 2단계: 양식 구조 파싱
-Python 스크립트로 양식의 다음 정보를 추출:
-- 시트명
-- 헤더 행 번호와 각 컬럼 의미 (일자, 거래처, 사용목적, 공급가액, 부가세, 합계, 계정과목, 적요 등)
-- 데이터 시작 행
-- 합계/소계 행 위치 (있을 경우)
-- 병합셀, 수식이 미리 들어있는 셀 보존
+
+표준 양식 `법인카드 등 정산서`의 구조는 아래와 같이 **이미 확정**되어 있습니다 (2026-06-01 분석 기준). 같은 양식이면 이 매핑을 그대로 사용하고, 구조가 다르면 openpyxl로 다시 파싱하세요.
+
+- **시트명:** `법인카드 등 정산서` (두 번째 시트 `Sheet1`은 비어 있음 — 사용 안 함)
+- **제목:** B2 = "법인카드 등 사용 정산서"
+- **헤더 행:** 5행
+- **데이터 시작 행:** 6행 / **데이터 끝 행:** 26행 (최대 21건)
+- **합계 행:** 27행 — `F27/G27/H27`에 `=SUM(…6:…26)` 수식이 이미 존재 (건드리지 말 것)
+- **미리 채워진 값:** B열 = "법인카드", C열 = `7304` (6~26행)
+
+#### 확정 컬럼 매핑
+
+| 열(letter / index) | 헤더 (5행) | 채울 값 | 비고 |
+|---|---|---|---|
+| B / 2 | 카드사 | "법인카드" | 이미 채워짐. 개인카드/현금이면 소유자 성명 |
+| C / 3 | 카드번호 (뒤 4자리) | 7304 | 이미 채워짐 |
+| **D / 4** | 사용(승인)일 | 영수증 사용일자 | `datetime.date` 객체로 입력 |
+| **E / 5** | 가맹점 | 가맹점명(사업자명) | |
+| **F / 6** | 공급가 | 공급가액 | 정수 |
+| **G / 7** | 부가세 | 부가세 | 정수 |
+| **H / 8** | 사용(승인)액 (KRW) | 합계 금액 | 정수 (= F + G) |
+| **I / 9** | 첨부 증빙# (파일명) | 영수증 파일명 | |
+| **J / 10** | 사용 목적 | 적요 (5단계에서 생성) | 이 양식의 "적요" 자리 |
+| **K / 11** | 비용 계정 | 계정과목 (4단계 분류) | |
+| L / 12 | 참석 인원수 (내부 임직원) | 접대비일 때만 | |
+| M / 13 | 참석자 명 (내부 임직원) | 접대비일 때만 | |
+| N / 14 | 참석 인원수 (외부 관계자) | 접대비일 때만 | |
+| O / 15 | 참석자 명 (외부 관계자) | 접대비일 때만 | |
+| P / 16 | 접대 대상 (법인명 등) | 접대비일 때만 | |
+| Q / 17 | "김영란법" 적용 여부 | 접대비일 때만 | |
+| R / 18 | 접대 대상 인당 접대액 | 접대비일 때만 | |
+| S / 19 | 비고 | `[확인필요]`·`[원본확인]`·중복 등 플래그 | |
+
+→ **일반 건은 D~K만 채우면 됨.** 계정과목이 접대비인 건에 한해 L~R을 추가로 채웁니다. F/G/H 합계는 27행 수식이 자동 계산하므로 손대지 않습니다.
+
+다른 양식일 경우 openpyxl로 다음을 추출:
 
 ```python
 import openpyxl
 wb = openpyxl.load_workbook(TEMPLATE_PATH)
-ws = wb.active
-# 헤더 행을 찾고 각 컬럼명을 dict로 매핑
+ws = wb["법인카드 등 정산서"]
+# 헤더 행(5)을 찾고 각 컬럼명을 dict로 매핑
 ```
 
 ### 3단계: 영수증 OCR/판독
@@ -76,11 +106,11 @@ ws = wb.active
 | 교육원/학원/세미나/도서 | 교육훈련비 또는 도서인쇄비 |
 | 병원/약국 | 복리후생비 |
 
-**모호한 경우 사용자에게 확인**하지 말고, 적요란에 `[확인필요]` 태그를 붙여 표시하고 처리 후 보고.
+**모호한 경우 사용자에게 확인**하지 말고, 비고란(S열)에 `[확인필요]` 태그를 붙여 표시하고 처리 후 보고.
 
-### 5단계: 적요 자동 생성
+### 5단계: 적요(사용 목적) 자동 생성
 
-각 건마다 다음 형식으로 적요 작성:
+각 건마다 다음 형식으로 사용 목적(J열)을 작성:
 - `{가맹점명} - {용도 추정}`
 - 예시: `스타벅스 강남점 - 외부 미팅 음료`, `카카오T - 거래처 방문 택시비`, `GS칼텍스 - 법인차량 주유`
 
@@ -88,25 +118,45 @@ ws = wb.active
 
 ### 6단계: 엑셀에 기입
 
-openpyxl로 양식의 데이터 시작 행부터 한 줄씩 채워넣기:
+openpyxl로 6행부터 한 줄씩 채워넣기 (확정 컬럼 매핑 기준):
 
 ```python
+import datetime, openpyxl
+
+DATA_START_ROW = 6
+DATA_END_ROW   = 26   # 최대 21건
+
+# 확정 컬럼 인덱스 (1-based)
+COL_DATE, COL_VENDOR = 4, 5            # D, E
+COL_SUPPLY, COL_VAT, COL_TOTAL = 6, 7, 8   # F, G, H
+COL_FILE, COL_PURPOSE, COL_ACCOUNT = 9, 10, 11  # I, J, K
+COL_NOTE = 19                          # S (비고)
+
+if len(items) > (DATA_END_ROW - DATA_START_ROW + 1):
+    # 21건 초과 시 사용자에게 알리고 분할 처리 또는 행 추가 협의
+    raise SystemExit(f"영수증 {len(items)}건이 양식 최대 {DATA_END_ROW-DATA_START_ROW+1}건을 초과")
+
 for idx, item in enumerate(items):
     row = DATA_START_ROW + idx
-    ws.cell(row=row, column=COL_DATE, value=item['date'])
-    ws.cell(row=row, column=COL_VENDOR, value=item['vendor'])
+    ws.cell(row=row, column=COL_DATE,    value=item['date'])      # datetime.date
+    ws.cell(row=row, column=COL_VENDOR,  value=item['vendor'])
+    ws.cell(row=row, column=COL_SUPPLY,  value=item['supply'])    # 정수
+    ws.cell(row=row, column=COL_VAT,     value=item['vat'])       # 정수
+    ws.cell(row=row, column=COL_TOTAL,   value=item['total'])     # 정수 (= supply + vat)
+    ws.cell(row=row, column=COL_FILE,    value=item['filename'])
+    ws.cell(row=row, column=COL_PURPOSE, value=item['purpose'])   # 적요
     ws.cell(row=row, column=COL_ACCOUNT, value=item['account'])
-    ws.cell(row=row, column=COL_SUPPLY, value=item['supply'])
-    ws.cell(row=row, column=COL_VAT, value=item['vat'])
-    ws.cell(row=row, column=COL_TOTAL, value=item['total'])
-    ws.cell(row=row, column=COL_DESC, value=item['description'])
+    if item.get('note'):
+        ws.cell(row=row, column=COL_NOTE, value=item['note'])     # [확인필요] 등
+    # 접대비 건이면 L~R(12~18) 추가 기입
 ```
 
 **중요**:
 - 양식의 기존 서식/수식/병합셀을 망가뜨리지 말 것
-- 합계 행에 수식이 있으면 그대로 두고, 없으면 `=SUM(...)` 수식으로 채울 것
+- 27행 합계(F/G/H)에는 이미 `=SUM(...)` 수식이 있으므로 그대로 둘 것 (덮어쓰지 말 것)
 - 날짜는 `datetime.date` 객체로 입력 (문자열이 아닌 진짜 날짜로 인식되도록)
 - 금액은 정수로 입력 (천 단위 구분기호는 셀 서식이 처리)
+- B열("법인카드")·C열(7304)은 이미 채워져 있으므로 덮어쓰지 말 것
 
 ### 7단계: 검증 및 보고
 
@@ -119,7 +169,7 @@ for idx, item in enumerate(items):
 
 ## 처리 실패 시
 
-- 영수증이 흐릿하거나 일부 정보가 안 보이는 경우: 가능한 정보만 채우고 적요에 `[원본확인]` 표시
+- 영수증이 흐릿하거나 일부 정보가 안 보이는 경우: 가능한 정보만 채우고 비고(S열)에 `[원본확인]` 표시
 - 같은 영수증이 중복으로 보이면 (같은 일시/금액/가맹점): 중복으로 표시하고 사용자에게 알림
 - 양식 구조를 파악 못할 경우: 추측하지 말고 사용자에게 헤더 행 위치와 컬럼 매핑을 물어볼 것
 
